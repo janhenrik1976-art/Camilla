@@ -39,3 +39,9 @@ Eksisterende notater i `jhh2.notes.v1` beholdes lokalt. Innlogging viser bare ko
 Skynotater lagres først når serveren bekrefter det. Ingen frakoblet skyredigering eller automatisk offline-kø. Synkronisering skjer ved innlogging, når appen vises, manuelt og hvert minutt når den er synlig. Åpne redigeringsvinduer oppdateres ikke automatisk. Versjonskontroll hindrer stille overskriving av et notat endret fra en annen enhet. Ved konflikt beholdes teksten i editoren slik at den kan kopieres før oppdatering.
 
 Lokale notater og innloggingsøkten ligger i nettleserlagringen. Bruk skjermlås på delte enheter og logg ut når du er ferdig. Avklar arbeidsgivers krav før jobbdata lagres.
+
+## Oppgaver og festede notater
+
+Kjør `supabase/tasks-and-pins.sql` i SQL Editor, også etter førstegangsoppsettet. Skriptet legger til to felt med standardverdier og validering av oppgavelister. Eksisterende notatinnhold og tilgangsregler beholdes. Før skriptet er kjørt fungerer vanlige skynotater fortsatt; nye kontroller er deaktivert med forklaring. Trykk «Oppdater notater» etter databaseoppdateringen.
+
+Åpne et notat, velg «Fest dette notatet øverst» og/eller legg til oppgaver. Kryss av fullførte oppgaver og trykk «Lagre notat». Lukking uten lagring forkaster endringene. Festede notater sorteres først i hvert område og i søkeresultater. Søk omfatter også oppgavetekst. Oppgaver og festing inngår i eksport/import og følger kontoens synkronisering og konfliktkontroll.

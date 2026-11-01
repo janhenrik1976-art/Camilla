@@ -3,8 +3,11 @@ const key = 'jhh2.notes.v1';
 const $ = s => document.querySelector(s);
 let notes = [], localNotes = [], view = 'Alle', editing = null, editingRevision = null;
 let session = null, busy = false, generation = 0, localReadable = true, loadedCloud = false, refreshSequence = 0;
+let featureCloudReady = false;
+let draftTasks = [];
 function notice(message) { $('#notice').textContent = message; $('#editor-status').textContent = message; }
-function valid(n) { return n && typeof n.id === 'string' && typeof n.title === 'string' && n.title.trim().length > 0 && n.title.length <= 160 && typeof n.body === 'string' && ['Innboks','Privat','Jobb'].includes(n.area) && Number.isFinite(n.updated) && !Number.isNaN(new Date(n.updated).getTime()); }
+function validTasks(tasks) { return tasks === undefined || (Array.isArray(tasks) && tasks.length <= 200 && tasks.every(t => t && typeof t.id === 'string' && typeof t.text === 'string' && t.text.length <= 500 && typeof t.done === 'boolean')); }
+function valid(n) { return n && validTasks(n.tasks) && (n.pinned === undefined || typeof n.pinned === 'boolean') && typeof n.id === 'string' && typeof n.title === 'string' && n.title.trim().length > 0 && n.title.length <= 160 && typeof n.body === 'string' && ['Innboks','Privat','Jobb'].includes(n.area) && Number.isFinite(n.updated) && !Number.isNaN(new Date(n.updated).getTime()); }
 try {
   const saved = JSON.parse(localStorage.getItem(key) || '[]');
   if (!Array.isArray(saved) || !saved.every(valid)) throw Error();
@@ -28,21 +31,27 @@ async function refresh() {
   const current = generation;
   const request = ++refreshSequence;
   $('#sync-status').textContent = 'Henter notater fra kontoen …';
-  const { data, error } = await cloud.from('notes').select('id,title,body,area,updated,revision').order('updated', {ascending:false});
+  let { data, error } = await cloud.from('notes').select('id,title,body,area,updated,revision,pinned,tasks').order('updated', {ascending:false});
+  featureCloudReady = !error;
+  if (error && ['42703','PGRST204'].includes(error.code)) {
+    ({data,error} = await cloud.from('notes').select('id,title,body,area,updated,revision').order('updated', {ascending:false}));
+  }
   if (current !== generation || request !== refreshSequence) return;
   if (error) { loadedCloud = false; $('#sync-status').textContent = friendlyError(error); return; }
   notes = data; loadedCloud = true; render();
-  $('#sync-status').textContent = 'Oppdatert fra kontoen · ' + new Date().toLocaleTimeString('nb-NO', {hour:'2-digit',minute:'2-digit'});
+  $('#sync-status').textContent = (featureCloudReady ? 'Oppdatert fra kontoen · ' : 'Notatene er hentet. Oppgaver og festing venter på databaseoppdatering. · ') + new Date().toLocaleTimeString('nb-NO', {hour:'2-digit',minute:'2-digit'});
 }
 function setBusy(value) {
   busy = value; if (value) refreshSequence++;
   document.querySelectorAll('#note-form button, #note-form input, #note-form textarea, #note-form select, #logout, #migrate').forEach(b => b.disabled = value);
+  featureUI();
 }
 async function saveNote(note) {
   if (!session) return persistLocal([...notes.filter(n => n.id !== note.id), note]);
   if (!loadedCloud) { notice('Hent notatene fra kontoen før du lagrer. Trykk Oppdater notater.'); return false; }
   const current = generation;
   const fields = {title:note.title,body:note.body,area:note.area,updated:note.updated};
+  if (featureCloudReady) Object.assign(fields,{pinned:note.pinned || false,tasks:note.tasks || []});
   const result = editing
     ? await cloud.from('notes').update(fields).eq('id', note.id).eq('revision', editingRevision).select()
     : await cloud.from('notes').insert({...fields,id:note.id,user_id:session.user.id}).select();
@@ -52,7 +61,56 @@ async function saveNote(note) {
   notes = [...notes.filter(n => n.id !== note.id), result.data[0]]; render();
   $('#sync-status').textContent = 'Lagret på kontoen'; return true;
 }
-function render(){const query=$('#search').value.toLocaleLowerCase('nb');const filtered=notes.filter(n=>(view==='Alle'||n.area===view)&&`${n.title} ${n.body}`.toLocaleLowerCase('nb').includes(query)).sort((a,b)=>b.updated-a.updated);$('#view-title').textContent=view==='Alle'?'Dine notater':view;$('#count').textContent=`${filtered.length} ${filtered.length===1?'notat':'notater'} · litt mindre å huske på`;const grid=$('#notes');grid.replaceChildren();if(!filtered.length){const empty=document.createElement('div');empty.className='empty';const h=document.createElement('h3');h.textContent=query?'Ingen treff denne gangen':'Her begynner oversikten din';const p=document.createElement('p');p.textContent=query?'Prøv et annet søkeord.':'En idé, en huskeliste eller noe du vil lære. Ta vare på din første tanke.';const b=document.createElement('button');b.className='primary';b.textContent='＋ Skriv et notat';b.onclick=()=>open();empty.append(h,p,b);grid.append(empty);}for(const n of filtered){const card=document.createElement('button');card.className='note';const area=document.createElement('span');area.className='badge '+n.area.toLowerCase();area.textContent=n.area;const title=document.createElement('h3');title.textContent=n.title;const body=document.createElement('p');body.textContent=n.body||'Et lite frø til en ny tanke.';const date=document.createElement('small');date.textContent=new Intl.DateTimeFormat('nb-NO',{day:'numeric',month:'short',year:'numeric'}).format(n.updated);card.append(area,title,body,date);card.onclick=()=>open(n);grid.append(card);}}
+function render() {
+  const query = $('#search').value.toLocaleLowerCase('nb');
+  const filtered = notes.filter(n => (view === 'Alle' || n.area === view) && `${n.title} ${n.body} ${(n.tasks || []).map(t => t.text).join(' ')}`.toLocaleLowerCase('nb').includes(query))
+    .sort((a,b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updated - a.updated);
+  $('#view-title').textContent = view === 'Alle' ? 'Dine notater' : view;
+  $('#count').textContent = `${filtered.length} ${filtered.length === 1 ? 'notat' : 'notater'} · litt mindre å huske på`;
+  const grid = $('#notes'); grid.replaceChildren();
+  if (!filtered.length) {
+    const empty = document.createElement('div'); empty.className = 'empty';
+    const h = document.createElement('h3'); h.textContent = query ? 'Ingen treff denne gangen' : 'Her begynner oversikten din';
+    const p = document.createElement('p'); p.textContent = query ? 'Prøv et annet søkeord.' : 'En idé, en huskeliste eller noe du vil lære. Ta vare på din første tanke.';
+    const button = document.createElement('button'); button.className='primary'; button.textContent='＋ Skriv et notat'; button.onclick=()=>open();
+    empty.append(h,p,button); grid.append(empty);
+  }
+  for (const n of filtered) {
+    const card = document.createElement('button'); card.className='note';
+    const area = document.createElement('span'); area.className='badge '+n.area.toLowerCase(); area.textContent=n.area;
+    card.append(area);
+    if (n.pinned) { const pin=document.createElement('span'); pin.className='pin-marker'; pin.textContent='Festet øverst'; card.append(pin); }
+    const title=document.createElement('h3'); title.textContent=n.title;
+    const body=document.createElement('p'); body.textContent=n.body || 'Et lite frø til en ny tanke.';
+    card.append(title,body);
+    if (n.tasks?.length) { const summary=document.createElement('span'); summary.className='task-summary'; summary.textContent=`${n.tasks.filter(t=>t.done).length} av ${n.tasks.length} oppgaver fullført`; card.append(summary); }
+    const date=document.createElement('small'); date.textContent=new Intl.DateTimeFormat('nb-NO',{day:'numeric',month:'short',year:'numeric'}).format(n.updated);
+    card.append(date); card.onclick=()=>open(n); grid.append(card);
+  }
+}
+function featureUI() {
+  const unavailable = !!session && !featureCloudReady;
+  $('#feature-hint').hidden = !unavailable;
+  $('#pinned').disabled = busy || unavailable;
+  $('#add-task').disabled = busy || unavailable || draftTasks.length >= 200;
+  document.querySelectorAll('#tasks input, #tasks button').forEach(el => el.disabled = busy || unavailable);
+}
+function renderTasks() {
+  const list=$('#tasks'); list.replaceChildren();
+  for (const task of draftTasks) {
+    const row=document.createElement('div'); row.className='task-row';
+    const check=document.createElement('input'); check.type='checkbox'; check.checked=task.done; check.setAttribute('aria-label','Fullført: '+(task.text || 'ny oppgave'));
+    const text=document.createElement('input'); text.type='text'; text.maxLength=500; text.value=task.text; text.placeholder='Hva skal gjøres?'; text.setAttribute('aria-label','Oppgavetekst');
+    text.classList.toggle('done',task.done);
+    check.onchange=()=>{ task.done=check.checked; text.classList.toggle('done',task.done); };
+    text.oninput=()=>{ task.text=text.value; check.setAttribute('aria-label','Fullført: '+(task.text || 'ny oppgave')); };
+    const remove=document.createElement('button'); remove.type='button'; remove.textContent='×'; remove.setAttribute('aria-label','Fjern oppgave');
+    remove.onclick=()=>{draftTasks=draftTasks.filter(t=>t.id!==task.id);renderTasks();};
+    row.append(check,text,remove); list.append(row);
+  }
+  featureUI();
+}
+$('#add-task').onclick=()=>{ if (busy || (session && !featureCloudReady) || draftTasks.length >= 200) return; draftTasks.push({id:crypto.randomUUID(),text:'',done:false}); renderTasks(); $('#tasks .task-row:last-child input[type=text]').focus(); };
 function open(n) {
   if (busy) return;
   if (session && !loadedCloud) { notice('Hent notatene fra kontoen først. Trykk Oppdater notater.'); return; }
@@ -60,6 +118,8 @@ function open(n) {
   editing = n?.id || null; editingRevision = n?.revision || null;
   $('#title').value = n?.title || ''; $('#body').value = n?.body || '';
   $('#area').value = n?.area || (view === 'Alle' ? 'Innboks' : view);
+  $('#pinned').checked = !!n?.pinned;
+  draftTasks = (n?.tasks || []).map(t => ({...t})); renderTasks();
   $('#delete').hidden = !n; $('#editor').showModal(); $('#title').focus();
 }
 $('#new-note').onclick = () => open();
@@ -73,7 +133,7 @@ $('#note-form').onsubmit = async e => {
   e.preventDefault(); if (busy) return;
   const title = $('#title').value.trim();
   if (!title) { $('#title').setCustomValidity('Skriv en tittel.'); $('#title').reportValidity(); return; }
-  const note = {id:editing || crypto.randomUUID(),title,body:$('#body').value,area:$('#area').value,updated:Date.now()};
+  const note = {id:editing || crypto.randomUUID(),title,body:$('#body').value,area:$('#area').value,pinned:$('#pinned').checked,tasks:draftTasks.filter(t=>t.text.trim()).map(t=>({...t,text:t.text.trim()})),updated:Date.now()};
   setBusy(true);
   try { if (await saveNote(note)) { $('#editor').close(); notice('Notatet er lagret.'); } }
   catch { notice('Lagring mislyktes. Kopier teksten og prøv igjen.'); }
@@ -97,7 +157,7 @@ $('#export').onclick = () => {
 };
 async function importToCloud(data) {
   // New IDs preserve all existing notes and never overwrite a note on another device.
-  const rows = data.map(n => ({id:crypto.randomUUID(),user_id:session.user.id,title:n.title,body:n.body,area:n.area,updated:n.updated}));
+  const rows = data.map(n => ({id:crypto.randomUUID(),user_id:session.user.id,title:n.title,body:n.body,area:n.area,updated:n.updated,...(featureCloudReady ? {pinned:!!n.pinned,tasks:n.tasks || []} : {})}));
   if (!rows.length) return;
   const {error} = await cloud.from('notes').insert(rows);
   if (error) throw error;
@@ -108,7 +168,7 @@ $('#import').onchange = async e => {
   try {
     const data = JSON.parse(await file.text());
     if (!Array.isArray(data) || !data.every(valid)) { notice('Velg en gyldig JSON-fil eksportert fra JHH2.0.'); return; }
-    if (session) { if (!loadedCloud) { notice('Hent notatene fra kontoen først.'); return; } await importToCloud(data); }
+    if (session) { if (!loadedCloud) { notice('Hent notatene fra kontoen først.'); return; } if (!featureCloudReady && data.some(n=>n.pinned || n.tasks?.length)) { notice('Oppdater databasen før du importerer oppgaver eller festede notater.'); return; } await importToCloud(data); }
     else { const ids = new Set(notes.map(n => n.id)); if (!persistLocal([...notes,...data.filter(n => !ids.has(n.id))])) return; }
     notice('Notatene er importert. Eksisterende notater er bevart.');
   } catch (error) { notice(friendlyError(error)); }
@@ -119,7 +179,8 @@ $('#migrate').onclick = async () => {
   setBusy(true);
   try {
     // Deterministic IDs make repeat attempts safe, including after a lost response.
-    const rows = localNotes.map(n => ({...n,user_id:session.user.id}));
+    if (!featureCloudReady && localNotes.some(n=>n.pinned || n.tasks?.length)) { notice('Oppdater databasen før du kopierer oppgaver eller festede notater.'); return; }
+    const rows = localNotes.map(n => ({id:n.id,title:n.title,body:n.body,area:n.area,updated:n.updated,user_id:session.user.id,...(featureCloudReady ? {pinned:!!n.pinned,tasks:n.tasks || []} : {})}));
     const {error} = await cloud.from('notes').upsert(rows,{onConflict:'id',ignoreDuplicates:true});
     if (error) throw error;
     notice('Lokale notater er kopiert til kontoen. Den lokale sikkerhetskopien er beholdt.');
